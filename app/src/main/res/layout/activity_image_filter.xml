@@ -1,0 +1,23 @@
+<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    xmlns:opencv="http://schemas.android.com/apk/res-auto">
+
+    <ph.edu.dlsu.mhealth.android.CustomCameraView
+        android:id="@+id/image_filter_view"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        opencv:camera_id="front"/>
+
+    <ImageButton
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:onClick="onClickReverseCamera"
+        android:src="@drawable/reverse"
+        android:layout_alignParentEnd="true"
+        android:layout_alignParentBottom="true"
+        android:layout_alignParentRight="true"
+        />
+
+</RelativeLayout>

@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">mHealthTest</string>
+    <string name="title_face_detection">Face Detection</string>
+    <string name="title_camera_preview">Camera Preview</string>
+    <string name="title_image_filter">Image Filter</string>
+    <string name="title_image_matching">Image Matching</string>
+</resources>

@@ -1,0 +1,400 @@
+package ph.edu.dlsu.mhealthtest;
+
+import android.annotation.SuppressLint;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.PorterDuff;
+import android.os.Bundle;
+import android.support.v7.app.AppCompatActivity;
+import android.util.Log;
+import android.view.Menu;
+import android.view.MenuInflater;
+import android.view.MenuItem;
+import android.view.MotionEvent;
+import android.view.SurfaceHolder;
+import android.view.SurfaceView;
+import android.view.View;
+import android.view.WindowManager;
+
+import org.opencv.android.BaseLoaderCallback;
+import org.opencv.android.CameraBridgeViewBase;
+import org.opencv.android.LoaderCallbackInterface;
+import org.opencv.android.OpenCVLoader;
+import org.opencv.core.Core;
+import org.opencv.core.CvType;
+import org.opencv.core.Mat;
+import org.opencv.core.Point;
+import org.opencv.core.Rect;
+import org.opencv.imgproc.Imgproc;
+
+import java.util.concurrent.atomic.AtomicReference;
+
+import ph.edu.dlsu.mhealth.android.CustomCameraView;
+import ph.edu.dlsu.mhealth.vision.ConsensusMatchingTracker;
+import ph.edu.dlsu.mhealth.vision.RecolorCMV;
+import ph.edu.dlsu.mhealth.vision.RecolorRC;
+import ph.edu.dlsu.mhealth.vision.RecolorRGV;
+import ph.edu.dlsu.mhealth.vision.StrokeEdgesFilter;
+
+/**
+ * Created by cobalt on 1/4/16.
+ */
+public class ImageFilterActivity extends AppCompatActivity implements CameraBridgeViewBase.CvCameraViewListener2, View.OnTouchListener {
+
+    private static final String TAG = "tag.ImageFilter";
+
+
+    /*********************  Update this if you add more filters  ***************/
+
+    public static final int VIEW_MODE_RGBA       = 0;
+    public static final int VIEW_MODE_RC_FILTER  = 1;
+    public static final int VIEW_MODE_CMV_FILTER = 2;
+    public static final int VIEW_MODE_RGV_FILTER = 3;
+    public static final int VIEW_MODE_SE_FILTER = 4;
+
+
+    public static final int VIEW_MODE_CMT_TRACKER = 5;
+
+
+    public static int viewMode = VIEW_MODE_RGBA;
+
+    /// Frame holders
+    private Mat mRgba;
+    private Mat mGray;
+
+    /// For Image Reduction
+    private static int scale = 2;
+    private static final int WIDTH = 1280 / scale;
+    private static final int HEIGHT = 720 / scale;
+
+    private CustomCameraView mCameraView;
+
+    // ROI Selection
+    SurfaceHolder _holder;
+    private int _canvasImgYOffset;
+    private int _canvasImgXOffset;
+    private AtomicReference<Point> trackedBox1stCorner;
+    private Paint rectPaint;
+
+    private Rect _trackedBox = null;
+
+
+    /// Filter
+    private RecolorRC mRCFilter;
+    private RecolorRGV mRGVFilter;
+    private RecolorCMV mCMVFilter;
+    private StrokeEdgesFilter mStrokeEdges;
+
+    private ConsensusMatchingTracker cmt;
+
+    // Parameters for handling the Camera
+    private static final String STATE_CAMERA_INDEX = "cameraIndex";
+    private boolean mIsCameraFrontFacing;
+    private int mNumCameras;
+    private int mCameraIndex;  // default to front camera
+
+
+    private BaseLoaderCallback mLoaderCallback = new BaseLoaderCallback(this) {
+        @Override
+        public void onManagerConnected(int status) {
+            switch (status) {
+                case LoaderCallbackInterface.SUCCESS: {
+
+                    // Load native library after(!) OpenCV initialization success
+                    System.loadLibrary("mhealth_vision");
+
+                    mCameraView.enableView();
+
+                    mCameraView.enableFpsMeter();
+
+                    mCameraView.setOnTouchListener(ImageFilterActivity.this);
+
+                    /// Initialize the filters
+                    mRCFilter = new RecolorRC();
+                    mRGVFilter = new RecolorRGV();
+                    mCMVFilter = new RecolorCMV();
+
+                    mStrokeEdges = new StrokeEdgesFilter();
+
+                    
+ 
+
+                }
+                break;
+                default: {
+                    super.onManagerConnected(status);
+                }
+                break;
+            }
+        }
+    };
+
+    public ImageFilterActivity() {
+        // Log.i(TAG, "Instantiated new " + this.getClass());
+    }
+
+
+    @SuppressLint("NewApi")
+    @Override
+    public void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+
+        if (savedInstanceState != null) {
+            mCameraIndex = savedInstanceState.getInt(STATE_CAMERA_INDEX, 0);
+        }
+
+        setContentView(R.layout.activity_image_filter);
+
+        mCameraView = (CustomCameraView) findViewById(R.id.image_filter_view);
+        mCameraView.setCameraIndex(mCameraIndex);
+        mCameraView.setVisibility(SurfaceView.VISIBLE);
+        mNumCameras = mCameraView.getNumberOfCameras();
+        mIsCameraFrontFacing = mCameraView.isCameraFrontFacing();
+        mCameraView.setMaxFrameSize(WIDTH, HEIGHT);
+        mCameraView.setCvCameraViewListener(this);
+
+        _holder = mCameraView.getHolder();
+
+        // ROI selection initialization
+        trackedBox1stCorner = new AtomicReference<Point>();
+        rectPaint = new Paint();
+        rectPaint.setColor(Color.rgb(0, 255, 0));
+        rectPaint.setStrokeWidth(5);
+        rectPaint.setStyle(Paint.Style.STROKE);
+
+    }
+
+
+    public void onSaveInstanceState(Bundle savedInstanceState) {
+        savedInstanceState.putInt(STATE_CAMERA_INDEX, mCameraIndex);
+        super.onSaveInstanceState(savedInstanceState);
+    }
+
+
+    @Override
+    public void onPause() {
+        super.onPause();
+
+        if (mCameraView != null)
+            mCameraView.disableView();
+
+        _trackedBox = null;
+        isCmtInitialized = false;
+    }
+
+
+    @Override
+    public void onResume() {
+        super.onResume();
+        if (!OpenCVLoader.initDebug()) {
+            OpenCVLoader.initAsync(OpenCVLoader.OPENCV_VERSION_3_0_0, this, mLoaderCallback);
+        } else {
+            mLoaderCallback.onManagerConnected(LoaderCallbackInterface.SUCCESS);
+        }
+    }
+
+    public void onDestroy() {
+        super.onDestroy();
+        if (mCameraView != null)
+            mCameraView.disableView();
+
+        mRCFilter.release();
+        mRGVFilter.release();
+        mCMVFilter.release();
+
+        mStrokeEdges.release();
+        cmt.release();
+
+        _trackedBox = null;
+        isCmtInitialized = false;
+    }
+
+    public void onCameraViewStarted(int width, int height) {
+        mGray = new Mat(height, width, CvType.CV_8UC1);
+        mRgba = new Mat(height, width, CvType.CV_8UC4);
+    }
+
+    public void onCameraViewStopped() {
+        mGray.release();
+        mRgba.release();
+    }
+
+    @Override
+    public Mat onCameraFrame(CameraBridgeViewBase.CvCameraViewFrame inputFrame) {
+
+        mRgba = inputFrame.rgba();
+        mGray = inputFrame.gray();
+
+        if (mIsCameraFrontFacing) {
+            // Mirror (horizontally flip) the preview.
+            Core.flip(mRgba, mRgba, 1);
+            Core.flip(mGray, mGray, 1);
+        }
+
+
+        /*********************  Update this if you add more filters  ***************/
+
+
+        switch (ImageFilterActivity.viewMode) {
+
+            case ImageFilterActivity.VIEW_MODE_RGBA:
+                break;
+
+            case ImageFilterActivity.VIEW_MODE_RC_FILTER:
+                mRCFilter.apply(mRgba, mRgba);
+                break;
+
+            case ImageFilterActivity.VIEW_MODE_CMV_FILTER:
+                mCMVFilter.apply(mRgba, mRgba);
+                break;
+
+            case ImageFilterActivity.VIEW_MODE_RGV_FILTER:
+                mRGVFilter.apply(mRgba, mRgba);
+                break;
+
+            case ImageFilterActivity.VIEW_MODE_SE_FILTER:
+                mStrokeEdges.apply(mRgba, mRgba);
+                break;
+
+
+            case ImageFilterActivity.VIEW_MODE_CMT_TRACKER:
+                Log.d(TAG, "_trackedBox != null ? " + (_trackedBox != null));
+                if (_trackedBox != null) {
+
+                    if (!isCmtInitialized) { /// ! CALL THIS ONLY ONCE!
+                        Log.d(TAG, " cmt.initialize() was called... ");
+                        cmt = new ConsensusMatchingTracker(mGray,
+                                (long) (_trackedBox.x),
+                                (long) (_trackedBox.y),
+                                (long) (_trackedBox.width),
+                                (long) (_trackedBox.height));
+                        isCmtInitialized = true;
+                    } else {
+                        Log.d(TAG, " cmt.apply() was called... ");
+                        cmt.apply(mGray, mRgba);
+                    }
+                }
+                break;
+
+        } // END SWITCH
+
+
+        return mRgba;
+    }
+
+
+    private Mat Reduce(Mat m) {
+        Mat dst = new Mat();
+        Imgproc.resize(m, dst, new org.opencv.core.Size(WIDTH, HEIGHT));
+        return dst;
+    }
+
+    @Override
+    public boolean onCreateOptionsMenu(Menu menu) {
+
+        MenuInflater inflater = getMenuInflater();
+
+        /*********************  Update this layout if you add more filters  ***************/
+        inflater.inflate(R.menu.activity_image_filter, menu);
+
+        return super.onCreateOptionsMenu(menu);
+    }
+
+
+
+
+    /*********************  Update this if you add more filters  ***************/
+
+    @Override
+    public boolean onOptionsItemSelected(MenuItem item) {
+
+        long action = item.getItemId();
+
+        if (action == R.id.action_rgba) {
+            viewMode = VIEW_MODE_RGBA;
+        } else if (action == R.id.action_recolor_rc) {
+            viewMode = VIEW_MODE_RC_FILTER;
+        }
+        else if (action == R.id.action_recolor_cmv) {
+            viewMode = VIEW_MODE_CMV_FILTER;
+        }
+        else if (action == R.id.action_recolor_rgv) {
+            viewMode = VIEW_MODE_RGV_FILTER;
+        }
+        else if (action == R.id.action_stroke_edges) {
+            viewMode = VIEW_MODE_SE_FILTER;
+        }
+        else if (action == R.id.action_cmt_tracker) {
+            viewMode = VIEW_MODE_CMT_TRACKER;
+        }
+
+
+        return super.onOptionsItemSelected(item);
+    }
+
+
+    @Override
+    public boolean onTouch(View v, MotionEvent event) {
+
+
+        final Point corner = new Point(
+                event.getX() - _canvasImgXOffset, event.getY()
+                - _canvasImgYOffset);
+
+        switch (event.getAction()) {
+
+            case MotionEvent.ACTION_DOWN:
+                trackedBox1stCorner.set(corner);
+                //Log.i("TAG", "1st corner: " + corner);
+                isCmtInitialized = false;
+                break;
+
+            case MotionEvent.ACTION_UP:
+                _trackedBox = new Rect(trackedBox1stCorner.get(), corner);
+                if (_trackedBox.area() > 100) {
+                     Log.i("TAG", "Tracked box DEFINED: " + _trackedBox);
+                    // Trigger the tracking view mode
+
+
+                } else {
+                    _trackedBox = null;
+                    isCmtInitialized = false;
+                }
+                break;
+
+
+            case MotionEvent.ACTION_MOVE:
+                final android.graphics.Rect rect = new android.graphics.Rect(
+                        (int) trackedBox1stCorner.get().x
+                                + _canvasImgXOffset,
+                        (int) trackedBox1stCorner.get().y
+                                + _canvasImgYOffset, (int) corner.x
+                        + _canvasImgXOffset, (int) corner.y
+                        + _canvasImgYOffset);
+                final Canvas canvas = _holder.lockCanvas(rect);
+                canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR);
+
+                canvas.drawRect(rect, rectPaint);
+                _holder.unlockCanvasAndPost(canvas);
+
+                break;
+        }
+
+        return true; //  all follow up calls of this touch event like
+        // ACTION_MOVE or ACTION_UP will be delivered
+
+    }
+
+
+    public void onClickReverseCamera(View v) {
+        mCameraIndex++;
+        if (mCameraIndex == mNumCameras) {
+            mCameraIndex = 0;
+        }
+        recreate();
+    }
+}
